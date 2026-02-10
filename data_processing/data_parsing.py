@@ -8,6 +8,7 @@ Created on Mon Jan  1 22:04:09 2024
 import sys
 import os
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d
 from multiprocessing import Pool
@@ -71,6 +72,19 @@ def parse_raw_data(file_path: str) -> pd.DataFrame:
     })
 
     return df
+def create_sliding_windows(df, feature_cols, target_col, window_size):
+    X = []
+    y = []
+
+    data_features = df[feature_cols].values
+    data_target = df[target_col].values
+
+    for i in range(len(df) - window_size):
+        X.append(data_features[i:i + window_size])
+        y.append(data_target[i + window_size - 1])  # predict last timestep SOC
+
+    return np.array(X), np.array(y)
+
 
 # Function to generate and save plot
 def generate_and_save_plot(data_df: pd.DataFrame, save_file_path: str, fig_title: str = '', plot_soc: bool = False) -> None: 
@@ -297,6 +311,13 @@ def process_file(args):
         df_processed['dV_dt'] = df_processed[voltage_col].diff().fillna(0)
         df_processed['dI_dt'] = df_processed[current_col].diff().fillna(0)
         df_processed['Temp_rolling_mean'] = (df_processed[temperature_col].rolling(10).mean().bfill())
+        window_size = 20
+        feature_cols = [voltage_col,current_col,temperature_col,'Temperature_norm','C_rate','Power_W','dV_dt','dI_dt','Temp_rolling_mean']
+        X, y = create_sliding_windows(df_processed, feature_cols, soc_col, window_size)
+        np.save(os.path.join(processed_dir, f'{csv_file_name}_X.npy'), X)
+        np.save(os.path.join(processed_dir, f'{csv_file_name}_y.npy'), y)
+        target_col = soc_col
+
 
 
 
