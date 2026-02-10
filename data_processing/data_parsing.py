@@ -139,19 +139,8 @@ def get_max_capacities(c20_file_path):
 
     return max_charge_capacity, max_discharge_capacity
 def temperature_capacity_scaling(T):
-    """
-    Empirical temperature-dependent capacity utilization factor.
-    """
-    if T <= 0:
-        return 0.85
-    elif T <= 10:
-        return 0.90
-    elif T <= 25:
-        return 1.00
-    elif T <= 45:
-        return 0.97
-    else:
-        return 0.93
+    return 1 - 0.003*(25 - T)
+
 
     
 
@@ -188,7 +177,16 @@ def get_initial_soc(df, charge_soc_fn, discharge_soc_fn, current_col, voltage_co
     initial_temp = df[temperature_col].iloc[0]
 
     # Find the index of the first non-zero current
-    first_non_zero_index = df[df[current_col] != 0].index[0]
+    #first_non_zero_index = df[df[current_col] != 0].index[0]
+    non_zero_indices = df[df[current_col] != 0].index
+    if len(non_zero_indices) == 0:
+        return 0.5  # fallback SOC
+    
+first_non_zero_index = non_zero_indices[0]
+    
+    
+
+
     first_non_zero_current = df[current_col].iloc[first_non_zero_index]
     corrected_voltage = voltage_temp_correction(initial_voltage, initial_temp)
 
@@ -233,27 +231,6 @@ def process_file(args):
             # Get pOCV-SOC interpolation functions and max capacities
             charge_soc_fn, discharge_soc_fn = get_pOCV_SOC_interp_fn(c20_file_path)
             max_charge_capacity, max_discharge_capacity = get_max_capacities(c20_file_path)
-            
-            temp_factor = temperature_capacity_scaling(temp_series.iloc[index])
-            T_inst = row[temperature_col]
-            temp_factor = temperature_capacity_scaling(T_inst)
-
-            if row[current_col] != 0:
-               if row[current_col] < 0:  # Discharge
-                  soc = last_known_soc - (abs(cumulative_capacity_change)/ (max_discharge_capacity * temp_factor))
-               else:  # Charge
-                  soc = last_known_soc + (cumulative_capacity_change/ (max_charge_capacity * temp_factor))
-
-               soc = max(0.0, min(soc, 1.0))
-               last_known_soc = soc
-        else:
-             soc = last_known_soc
-
-            
-
-
-            df['Time_diff'] = df[time_col_s].diff().fillna(0) / 3600  
-            df['Cumulative_Capacity_Ah'] = (df[current_col] * df['Time_diff']).cumsum()
 
             # Get initial SoC based on the first voltage reading and whether the battery is charging or discharging
             initial_soc = get_initial_soc(df, charge_soc_fn, discharge_soc_fn, current_col, voltage_col,temperature_col)
@@ -266,13 +243,16 @@ def process_file(args):
             for index, row in df.iterrows():
                 # Skip the first row to avoid indexing errors
                 if index == 0:
+                    df.at[index, 'Cumulative_Capacity_Ah'] = 0.0
+                    df.at[index, soc_col] = initial_soc
                     continue
 
                 # Calculate the cumulative capacity change
                 time_diff = (row[time_col_s] - df.at[index-1, time_col_s]) / 3600
                 cumulative_capacity_change = row[current_col] * time_diff
-                df.at[index, 'Cumulative_Capacity_Ah'] = df.at[index-1, 'Cumulative_Capacity_Ah'] + cumulative_capacity_change
-                df.at[index, 'Temp_factor'] = temp_factor
+                df.at[index, 'Cumulative_Capacity_Ah'] = (df.at[index-1, 'Cumulative_Capacity_Ah'] + cumulative_capacity_change)
+                T_inst = row[temperature_col]
+                temp_factor = temperature_capacity_scaling(T_inst)
 
                 # If current is not zero (not in relaxation), update SoC based on the cumulative capacity
                 if row[current_col] != 0:  # Assuming relaxation is when current is exactly 0
@@ -282,7 +262,7 @@ def process_file(args):
                         soc = last_known_soc + (cumulative_capacity_change / max_charge_capacity)
                     
                     # Clamp SoC between 0 and 1
-                    soc = max(0, min(soc, 1))
+                    soc = max(0.0, min(soc, 1.0))
                     last_known_soc = soc  # Update the last known SoC
                 else:
                     # If in relaxation phase, SoC remains the same as the last known value
@@ -311,7 +291,11 @@ def process_file(args):
         df_processed['SOC_class_jump'] = df_processed['SOC_class'].diff().abs().fillna(0)
         df_processed['C_rate'] = df_processed[current_col] / nominal_capacity_ah
         df_processed['Power_W'] = df_processed[current_col] * df_processed[voltage_col]
-        df_processed['Temperature_norm'] = (df_processed['Temperature'] - 25) / 25
+        df_processed['Temperature_norm'] = (df_processed[temperature_col] - 25) / 25
+        df_processed['dV_dt'] = df_processed[voltage_col].diff().fillna(0)
+        df_processed['dI_dt'] = df_processed[current_col].diff().fillna(0)
+        df_processed['Temp_rolling_mean'] = df_processed[temperature_col].rolling(10).mean().fillna(method='bfill')
+
 
 
 
