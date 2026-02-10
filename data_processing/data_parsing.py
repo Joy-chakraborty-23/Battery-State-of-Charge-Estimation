@@ -172,29 +172,26 @@ def process_c20_files(T):
         logging.error(f'Error processing C20 files for: {T} - {e}')
         return 0  # Return 0 on error
 
-def get_initial_soc(df, charge_soc_fn, discharge_soc_fn, current_col, voltage_col,temprature_col):
+def get_initial_soc(df, charge_soc_fn, discharge_soc_fn, current_col, voltage_col, temperature_col):
     initial_voltage = df[voltage_col].iloc[0]
     initial_temp = df[temperature_col].iloc[0]
 
-    # Find the index of the first non-zero current
-    #first_non_zero_index = df[df[current_col] != 0].index[0]
+    # Find first non-zero current index
     non_zero_indices = df[df[current_col] != 0].index
+
     if len(non_zero_indices) == 0:
         return 0.5  # fallback SOC
-    
-first_non_zero_index = non_zero_indices[0]
-    
-    
 
-
+    first_non_zero_index = non_zero_indices[0]
     first_non_zero_current = df[current_col].iloc[first_non_zero_index]
+
     corrected_voltage = voltage_temp_correction(initial_voltage, initial_temp)
 
-    # Determine SOC based on the sign of the first non-zero current
     if first_non_zero_current < 0:
-        return discharge_soc_fn(corrected_voltage)
+        return float(discharge_soc_fn(corrected_voltage))
     else:
-        return charge_soc_fn(corrected_voltage)
+        return float(charge_soc_fn(corrected_voltage))
+
 
 def process_file(args):
     csv_file_name, T = args
@@ -238,19 +235,21 @@ def process_file(args):
 
             # Calculate cumulative capacity and SoC throughout the dataset
             last_known_soc = initial_soc  # Keep track of the last known SoC value
-            df['Cumulative_Capacity_Ah'] = 0.0  # Initialize the cumulative capacity column
+            df[capacity_cc_col] = 0.0  # Initialize the cumulative capacity column
 
             for index, row in df.iterrows():
                 # Skip the first row to avoid indexing errors
-                if index == 0:
-                    df.at[index, 'Cumulative_Capacity_Ah'] = 0.0
+                if index == 0.0:
+                    df.at[index, capacity_cc_col] = 0.0
+
+                    
                     df.at[index, soc_col] = initial_soc
                     continue
 
                 # Calculate the cumulative capacity change
                 time_diff = (row[time_col_s] - df.at[index-1, time_col_s]) / 3600
                 cumulative_capacity_change = row[current_col] * time_diff
-                df.at[index, 'Cumulative_Capacity_Ah'] = (df.at[index-1, 'Cumulative_Capacity_Ah'] + cumulative_capacity_change)
+                df.at[index, capacity_cc_col] = (df.at[index-1, capacity_cc_col] + cumulative_capacity_change)
                 T_inst = row[temperature_col]
                 temp_factor = temperature_capacity_scaling(T_inst)
 
@@ -294,7 +293,7 @@ def process_file(args):
         df_processed['Temperature_norm'] = (df_processed[temperature_col] - 25) / 25
         df_processed['dV_dt'] = df_processed[voltage_col].diff().fillna(0)
         df_processed['dI_dt'] = df_processed[current_col].diff().fillna(0)
-        df_processed['Temp_rolling_mean'] = df_processed[temperature_col].rolling(10).mean().fillna(method='bfill')
+        df_processed['Temp_rolling_mean'] = (df_processed[temperature_col].rolling(10).mean().bfill())
 
 
 
