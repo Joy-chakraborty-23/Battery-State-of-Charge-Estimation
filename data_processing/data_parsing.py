@@ -239,8 +239,8 @@ def process_file(args):
 
             for index, row in df.iterrows():
                 # Skip the first row to avoid indexing errors
-                if index == 0.0:
-                    df.at[index, capacity_cc_col] = 0.0
+                if index == 0:
+                    df.at[index, capacity_cc_col] = 0
 
                     
                     df.at[index, soc_col] = initial_soc
@@ -252,13 +252,16 @@ def process_file(args):
                 df.at[index, capacity_cc_col] = (df.at[index-1, capacity_cc_col] + cumulative_capacity_change)
                 T_inst = row[temperature_col]
                 temp_factor = temperature_capacity_scaling(T_inst)
+                if row[current_col] != 0:
+                    if row[current_col] < 0:  
+                        effective_capacity = max_discharge_capacity * temp_factor
+                        soc = last_known_soc - (abs(cumulative_capacity_change) / effective_capacity)
+                    else: 
+                        effective_capacity = max_charge_capacity * temp_factor
+                        soc = last_known_soc + (cumulative_capacity_change / effective_capacity)
 
                 # If current is not zero (not in relaxation), update SoC based on the cumulative capacity
-                if row[current_col] != 0:  # Assuming relaxation is when current is exactly 0
-                    if row[current_col] < 0:  # Discharging
-                        soc = last_known_soc - (abs(cumulative_capacity_change) / max_discharge_capacity)
-                    else:  # Charging
-                        soc = last_known_soc + (cumulative_capacity_change / max_charge_capacity)
+
                     
                     # Clamp SoC between 0 and 1
                     soc = max(0.0, min(soc, 1.0))
