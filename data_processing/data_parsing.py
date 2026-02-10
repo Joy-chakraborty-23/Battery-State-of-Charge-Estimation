@@ -313,10 +313,26 @@ def process_file(args):
         df_processed['Temp_rolling_mean'] = (df_processed[temperature_col].rolling(10).mean().bfill())
         window_size = 20
         feature_cols = [voltage_col,current_col,temperature_col,'Temperature_norm','C_rate','Power_W','dV_dt','dI_dt','Temp_rolling_mean']
-        X, y = create_sliding_windows(df_processed, feature_cols, soc_col, window_size)
-        np.save(os.path.join(processed_dir, f'{csv_file_name}_X.npy'), X)
-        np.save(os.path.join(processed_dir, f'{csv_file_name}_y.npy'), y)
-        target_col = soc_col
+        if len(df_processed) <= window_size:
+            logging.warning(f"{csv_file_name} skipped: not enough samples for window size {window_size}")
+            return 0
+            
+            
+            
+        
+        split_ratio = 0.8
+        split_index = int(len(df_processed) * split_ratio)
+        df_train = df_processed.iloc[:split_index].reset_index(drop=True)
+        df_test = df_processed.iloc[split_index:].reset_index(drop=True)
+        if len(df_train) <= window_size or len(df_test) <= window_size:
+            logging.warning(f"{csv_file_name} skipped: insufficient samples after split")
+            return 0
+        X_train, y_train = create_sliding_windows(df_train, feature_cols, soc_col, window_size)
+        X_test, y_test = create_sliding_windows(df_test, feature_cols, soc_col, window_size)
+        np.save(os.path.join(processed_dir, f'{csv_file_name}_X_train.npy'), X_train)
+        np.save(os.path.join(processed_dir, f'{csv_file_name}_y_train.npy'), y_train)
+        np.save(os.path.join(processed_dir, f'{csv_file_name}_X_test.npy'), X_test)
+        np.save(os.path.join(processed_dir, f'{csv_file_name}_y_test.npy'), y_test)
 
 
 
