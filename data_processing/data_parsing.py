@@ -95,6 +95,12 @@ def generate_and_save_plot(data_df: pd.DataFrame, save_file_path: str, fig_title
     plt.close(fig)
 
 
+def voltage_temp_correction(V, T):
+    # Simple linear correction (~2–4 mV/°C)
+    return V + 0.002 * (25 - T)
+
+
+
 # Function to create pseudo OCV-SOC interpolation function
 def get_pOCV_SOC_interp_fn(file_path: str) -> (interp1d, interp1d):
     df = pd.read_csv(file_path)
@@ -132,6 +138,22 @@ def get_max_capacities(c20_file_path):
     max_charge_capacity = df_charge[capacity_col].max() - df_charge[capacity_col].min()
 
     return max_charge_capacity, max_discharge_capacity
+def temperature_capacity_scaling(T):
+    """
+    Empirical temperature-dependent capacity utilization factor.
+    """
+    if T <= 0:
+        return 0.85
+    elif T <= 10:
+        return 0.90
+    elif T <= 25:
+        return 1.00
+    elif T <= 45:
+        return 0.97
+    else:
+        return 0.93
+
+    
 
 
 def process_c20_files(T):
@@ -161,18 +183,20 @@ def process_c20_files(T):
         logging.error(f'Error processing C20 files for: {T} - {e}')
         return 0  # Return 0 on error
 
-def get_initial_soc(df, charge_soc_fn, discharge_soc_fn, current_col, voltage_col):
+def get_initial_soc(df, charge_soc_fn, discharge_soc_fn, current_col, voltage_col,temprature_col):
     initial_voltage = df[voltage_col].iloc[0]
+    initial_temp = df[temperature_col].iloc[0]
 
     # Find the index of the first non-zero current
     first_non_zero_index = df[df[current_col] != 0].index[0]
     first_non_zero_current = df[current_col].iloc[first_non_zero_index]
+    corrected_voltage = voltage_temp_correction(initial_voltage, initial_temp)
 
     # Determine SOC based on the sign of the first non-zero current
     if first_non_zero_current < 0:
-        return discharge_soc_fn(initial_voltage)
+        return discharge_soc_fn(corrected_voltage)
     else:
-        return charge_soc_fn(initial_voltage)
+        return charge_soc_fn(corrected_voltage)
 
 def process_file(args):
     csv_file_name, T = args
@@ -193,6 +217,7 @@ def process_file(args):
         # Parsing raw data
         raw_file_path = os.path.join(raw_data_directory, T, f'{csv_file_name}.csv')
         df = parse_raw_data(raw_file_path)
+        temp_series = df[temperature_col]
 
         # Save parsed data
         parsed_file_path = os.path.join(parsed_dir, f'{csv_file_name}_parsed.csv')
@@ -208,12 +233,30 @@ def process_file(args):
             # Get pOCV-SOC interpolation functions and max capacities
             charge_soc_fn, discharge_soc_fn = get_pOCV_SOC_interp_fn(c20_file_path)
             max_charge_capacity, max_discharge_capacity = get_max_capacities(c20_file_path)
+            
+            temp_factor = temperature_capacity_scaling(temp_series.iloc[index])
+            T_inst = row[temperature_col]
+            temp_factor = temperature_capacity_scaling(T_inst)
+
+            if row[current_col] != 0:
+               if row[current_col] < 0:  # Discharge
+                  soc = last_known_soc - (abs(cumulative_capacity_change)/ (max_discharge_capacity * temp_factor))
+               else:  # Charge
+                  soc = last_known_soc + (cumulative_capacity_change/ (max_charge_capacity * temp_factor))
+
+               soc = max(0.0, min(soc, 1.0))
+               last_known_soc = soc
+        else:
+             soc = last_known_soc
+
+            
+
 
             df['Time_diff'] = df[time_col_s].diff().fillna(0) / 3600  
             df['Cumulative_Capacity_Ah'] = (df[current_col] * df['Time_diff']).cumsum()
 
             # Get initial SoC based on the first voltage reading and whether the battery is charging or discharging
-            initial_soc = get_initial_soc(df, charge_soc_fn, discharge_soc_fn, current_col, voltage_col)
+            initial_soc = get_initial_soc(df, charge_soc_fn, discharge_soc_fn, current_col, voltage_col,temperature_col)
             df[soc_col] = initial_soc  # Initialize the SoC column with the initial SoC value
 
             # Calculate cumulative capacity and SoC throughout the dataset
@@ -229,6 +272,7 @@ def process_file(args):
                 time_diff = (row[time_col_s] - df.at[index-1, time_col_s]) / 3600
                 cumulative_capacity_change = row[current_col] * time_diff
                 df.at[index, 'Cumulative_Capacity_Ah'] = df.at[index-1, 'Cumulative_Capacity_Ah'] + cumulative_capacity_change
+                df.at[index, 'Temp_factor'] = temp_factor
 
                 # If current is not zero (not in relaxation), update SoC based on the cumulative capacity
                 if row[current_col] != 0:  # Assuming relaxation is when current is exactly 0
@@ -254,6 +298,27 @@ def process_file(args):
         
         df['Rounded_Time'] = df[time_col_s].round().astype(int)
         df_processed = df.drop_duplicates(subset='Rounded_Time')
+        soc_bins = [0.0, 0.10, 0.30, 0.60, 0.80, 1.01]
+        soc_labels = [0, 1, 2, 3, 4]
+
+        df_processed['SOC_class'] = pd.cut(
+               df_processed[soc_col],
+               bins=soc_bins,
+               labels=soc_labels,
+               include_lowest=True
+               ).astype(int)
+        df_processed['Relaxation'] = (df_processed[current_col] == 0).astype(int)
+        df_processed['SOC_class_jump'] = df_processed['SOC_class'].diff().abs().fillna(0)
+        df_processed['C_rate'] = df_processed[current_col] / nominal_capacity_ah
+        df_processed['Power_W'] = df_processed[current_col] * df_processed[voltage_col]
+        df_processed['Temperature_norm'] = (df_processed['Temperature'] - 25) / 25
+
+
+
+
+
+
+
 
         # Generating and saving SOC plots
         soc_plot_file_path = os.path.join(processed_plots_dir, f'{csv_file_name}_processed_plot.pdf')
